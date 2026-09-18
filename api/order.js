@@ -1,7 +1,5 @@
-// api/order.js
 import { kv } from '@vercel/kv';
 
-// 生成 6 位不重复易识别的随机短码
 function generateShortCode() {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
   let code = '';
@@ -12,7 +10,6 @@ function generateShortCode() {
 }
 
 export default async function handler(req, res) {
-  // 允许跨域
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -21,25 +18,36 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // 1. 管理员后台：创建订单短码 (POST)
+  // 1. POST 请求：创建订单 或 触发取码后10分钟倒计时
   if (req.method === 'POST') {
     try {
-      const { phone, targetUrl } = req.body;
+      const { action, oid, phone, targetUrl } = req.body;
+
+      // 买家取到验证码后触发：将过期时间重置为 600 秒（10分钟）
+      if (action === 'complete') {
+        if (!oid) return res.status(400).json({ error: '缺少 oid' });
+        const existing = await kv.get(`order:${oid}`);
+        if (existing) {
+          // 标记已获取过验证码，并设为 10 分钟后删除
+          await kv.set(`order:${oid}`, { ...existing, fetchedAt: Date.now() }, { ex: 600 });
+        }
+        return res.status(200).json({ success: true, message: '已设定10分钟后失效' });
+      }
+
+      // 管理后台创建订单：初始 20 小时过期（72000秒）
       if (!phone || !targetUrl) {
         return res.status(400).json({ error: 'phone 与 targetUrl 不能为空' });
       }
 
-      const oid = generateShortCode();
-      // 存入 KV，设置 72000 秒（2 小时）自动过期清理
-      await kv.set(`order:${oid}`, { phone, targetUrl }, { ex: 72000 });
-
-      return res.status(200).json({ oid });
+      const newOid = generateShortCode();
+      await kv.set(`order:${newOid}`, { phone, targetUrl }, { ex: 72000 });
+      return res.status(200).json({ oid: newOid });
     } catch (err) {
-      return res.status(500).json({ error: '存储失败: ' + err.message });
+      return res.status(500).json({ error: '操作失败: ' + err.message });
     }
   }
 
-  // 2. 客户前端：根据短码查询订单 (GET)
+  // 2. GET 请求：查询订单
   if (req.method === 'GET') {
     try {
       const { oid } = req.query;
