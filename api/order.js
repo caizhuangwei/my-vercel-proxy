@@ -30,8 +30,8 @@ export default async function handler(req, res) {
       }
 
       const oid = generateShortCode();
-      // 存入 KV，设置 7200 秒（2 小时）自动过期清理
-      await kv.set(`order:${oid}`, { phone, targetUrl }, { ex: 7200 });
+      // 存入 KV，设置 72000 秒（2 小时）自动过期清理
+      await kv.set(`order:${oid}`, { phone, targetUrl }, { ex: 72000 });
 
       return res.status(200).json({ oid });
     } catch (err) {
