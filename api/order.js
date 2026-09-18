@@ -18,17 +18,23 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // 1. POST 请求：创建订单 或 触发取码后10分钟倒计时
+  // 1. POST 请求：创建订单 / 触发取码后10分钟倒计时 / 释放订单
   if (req.method === 'POST') {
     try {
       const { action, oid, phone, targetUrl } = req.body;
+
+      // 【新增】管理后台释放订单：立即删除，用户端马上失效
+      if (action === 'release') {
+        if (!oid) return res.status(400).json({ error: '缺少 oid' });
+        await kv.del(`order:${oid}`);
+        return res.status(200).json({ success: true, message: '订单已释放' });
+      }
 
       // 买家取到验证码后触发：将过期时间重置为 600 秒（10分钟）
       if (action === 'complete') {
         if (!oid) return res.status(400).json({ error: '缺少 oid' });
         const existing = await kv.get(`order:${oid}`);
         if (existing) {
-          // 标记已获取过验证码，并设为 10 分钟后删除
           await kv.set(`order:${oid}`, { ...existing, fetchedAt: Date.now() }, { ex: 600 });
         }
         return res.status(200).json({ success: true, message: '已设定10分钟后失效' });
