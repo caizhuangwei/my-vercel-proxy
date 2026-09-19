@@ -31,12 +31,27 @@ export default async function handler(req, res) {
       });
       if (dup) return res.status(200).json({ success: true, dup: true });
 
+      // ★ 关键：后端自己用 oid 去查订单，把 targetUrl 补上
+      // index 端完全不用改，也不用担心订单释放/过期后查不到
+      let targetUrl = '';
+      if (oid) {
+        try {
+          const order = await kv.get(`order:${oid}`);
+          if (order && order.targetUrl) {
+            targetUrl = order.targetUrl;
+          }
+        } catch (e) {
+          console.warn('补 targetUrl 失败（不影响上报）:', e);
+        }
+      }
+
       const record = {
         phone: String(phone),
         code: String(code),
         content: String(content || ''),
         time: time || new Date().toLocaleString('zh-CN', { hour12: false }),
         oid: oid || '',
+        targetUrl: targetUrl,   // ★ 存下来，永久可查
         ts: now
       };
 
