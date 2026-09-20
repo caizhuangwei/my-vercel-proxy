@@ -1,5 +1,8 @@
 import { kv } from '@vercel/kv';
 
+// ⚠️ 改成你自己的短链域名前缀（也可以用 Vercel 环境变量 SHORTLINK_BASE 覆盖）
+const SHORTLINK_BASE = process.env.SHORTLINK_BASE || 'https://你的短链域名/s/';
+
 function generateShortCode() {
   const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
   let code = '';
@@ -7,6 +10,10 @@ function generateShortCode() {
     code += chars.charAt(Math.floor(Math.random() * chars.length));
   }
   return code;
+}
+
+function buildShortUrl(oid) {
+  return SHORTLINK_BASE + oid;
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000; // 24 小时
@@ -32,7 +39,6 @@ export default async function handler(req, res) {
       }
 
       // === 【老平台专用】取到验证码后 10 分钟失效 ===
-      // 这个逻辑保持原样，老平台的前端依然会调 complete，互不影响
       if (action === 'complete') {
         if (!oid) return res.status(400).json({ error: '缺少 oid' });
         const existing = await kv.get(`order:${oid}`);
@@ -47,8 +53,6 @@ export default async function handler(req, res) {
       }
 
       // === 【新平台】买家点击“我已阅读取号” ===
-      // 首次取号：从此刻起算 24 小时有效期，写入 firstClaimAt / expireAt
-      // 后续取号（刷新/换设备）：直接返回已有的 expireAt，不重置
       if (action === 'claim') {
         if (!oid) return res.status(400).json({ error: '缺少 oid' });
 
@@ -69,7 +73,7 @@ export default async function handler(req, res) {
           await kv.set(
             `order:${oid}`,
             { ...data, firstClaimAt, expireAt },
-            { ex: ttlSeconds } // KV 里的 TTL 也覆盖为 24 小时
+            { ex: ttlSeconds }
           );
         }
 
@@ -77,31 +81,34 @@ export default async function handler(req, res) {
           phone: data.phone || '',
           password: data.password || '',
           targetUrl: data.targetUrl || '',
+          shortUrl: data.shortUrl || buildShortUrl(oid),  // 新增：返回短链
           firstClaimAt,
           expireAt
         });
       }
 
       // === 管理后台创建订单 ===
-      // 初始 TTL 保持 20 小时；真正的 24 小时从用户点击取号开始算
       if (!phone || !targetUrl) {
         return res.status(400).json({ error: 'phone 与 targetUrl 不能为空' });
       }
 
       const newOid = generateShortCode();
+      const shortUrl = buildShortUrl(newOid);  // 新增：生成短链
+
       await kv.set(
         `order:${newOid}`,
         {
           phone,
           password: password || '',
           targetUrl,
+          shortUrl,               // 新增：保存短链
           createdAt: Date.now(),
           firstClaimAt: 0,
           expireAt: 0
         },
         { ex: 72000 } // 20 小时，等待用户点击取号
       );
-      return res.status(200).json({ oid: newOid });
+      return res.status(200).json({ oid: newOid, shortUrl });  // 新增：返回短链
     } catch (err) {
       return res.status(500).json({ error: '操作失败: ' + err.message });
     }
@@ -116,7 +123,12 @@ export default async function handler(req, res) {
       if (!data) {
         return res.status(404).json({ error: '订单已过期或不存在' });
       }
-      return res.status(200).json(data);
+
+      // 确保返回数据里带 shortUrl（历史数据没有的话现补）
+      return res.status(200).json({
+        ...data,
+        shortUrl: data.shortUrl || buildShortUrl(oid)
+      });
     } catch (err) {
       return res.status(500).json({ error: '查询失败: ' + err.message });
     }
