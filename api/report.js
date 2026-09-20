@@ -10,29 +10,47 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // POST: 用户端上报
+  // POST: 用户端上报（取号 / 验证码）
   if (req.method === 'POST') {
     try {
-      const { phone, code, content, time, oid } = req.body || {};
-      if (!phone || !code) {
-        return res.status(400).json({ error: 'phone 和 code 不能为空' });
+      const { phone, code, content, time, oid, type } = req.body || {};
+      const recType = type === 'claim' ? 'claim' : 'sms';
+
+      // ★ 校验放宽：取号记录（claim）不带 code 也允许
+      if (!phone) {
+        return res.status(400).json({ error: 'phone 不能为空' });
+      }
+      if (recType === 'sms' && !code) {
+        return res.status(400).json({ error: '验证码记录必须带 code' });
       }
 
-      // 30 秒内相同 phone+code 去重
-      const recent = await kv.lrange(REPORT_KEY, 0, 29);
       const now = Date.now();
+
+      // ★ 去重策略：
+      //   - sms：30 秒内相同 phone+code 去重
+      //   - claim：同一 oid+phone 只记一次（防止买家刷新重复上报）
+      const recent = await kv.lrange(REPORT_KEY, 0, 49);
       const dup = recent.some(r => {
         try {
           const o = typeof r === 'string' ? JSON.parse(r) : r;
-          return o.phone === String(phone) &&
-                 o.code === String(code) &&
-                 now - (o.ts || 0) < 30000;
+          if (recType === 'sms') {
+            return (o.type !== 'claim') &&
+                   o.phone === String(phone) &&
+                   o.code === String(code) &&
+                   now - (o.ts || 0) < 30000;
+          }
+          // claim 去重
+          if (o.type === 'claim' &&
+              o.phone === String(phone) &&
+              o.oid === (oid || '')) {
+            return true;
+          }
+          return false;
         } catch (e) { return false; }
       });
       if (dup) return res.status(200).json({ success: true, dup: true });
 
-      // ★ 关键：后端自己用 oid 去查订单，把 targetUrl 补上
-      // index 端完全不用改，也不用担心订单释放/过期后查不到
+      // 后端用 oid 反查订单补 targetUrl
       let targetUrl = '';
       if (oid) {
         try {
@@ -47,11 +65,12 @@ export default async function handler(req, res) {
 
       const record = {
         phone: String(phone),
-        code: String(code),
+        code: String(code || ''),
         content: String(content || ''),
         time: time || new Date().toLocaleString('zh-CN', { hour12: false }),
         oid: oid || '',
-        targetUrl: targetUrl,   // ★ 存下来，永久可查
+        targetUrl: targetUrl,
+        type: recType,           // ★ 新增：保存类型
         ts: now
       };
 
@@ -64,7 +83,7 @@ export default async function handler(req, res) {
     }
   }
 
-  // GET: admin 拉取记录
+  // GET: admin 拉取记录（完全不变）
   if (req.method === 'GET') {
     try {
       const { limit } = req.query;
