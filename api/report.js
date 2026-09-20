@@ -10,42 +10,42 @@ export default async function handler(req, res) {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // POST: 用户端上报（取号 / 验证码）
+  // POST: 用户端上报（取号 / 验证码 / 旧平台）
   if (req.method === 'POST') {
     try {
       const { phone, code, content, time, oid, type } = req.body || {};
-      const recType = type === 'claim' ? 'claim' : 'sms';
 
-      // ★ 校验放宽：取号记录（claim）不带 code 也允许
-      if (!phone) {
-        return res.status(400).json({ error: 'phone 不能为空' });
-      }
-      if (recType === 'sms' && !code) {
-        return res.status(400).json({ error: '验证码记录必须带 code' });
+      // ★ 关键：只有明确传 'claim' 或 'sms' 才用，其它（含旧平台不传）一律存 ''
+      const recType = (type === 'claim' || type === 'sms') ? type : '';
+
+      // ★ 校验：
+      //   - claim：只要求 phone
+      //   - sms / 旧平台（recType === ''）：要求 phone + code
+      if (recType === 'claim') {
+        if (!phone) return res.status(400).json({ error: 'phone 不能为空' });
+      } else {
+        if (!phone || !code) return res.status(400).json({ error: 'phone 和 code 不能为空' });
       }
 
       const now = Date.now();
 
-      // ★ 去重策略：
-      //   - sms：30 秒内相同 phone+code 去重
-      //   - claim：同一 oid+phone 只记一次（防止买家刷新重复上报）
+      // 去重
       const recent = await kv.lrange(REPORT_KEY, 0, 49);
       const dup = recent.some(r => {
         try {
           const o = typeof r === 'string' ? JSON.parse(r) : r;
-          if (recType === 'sms') {
-            return (o.type !== 'claim') &&
+
+          // claim：同 phone + oid 只记一次
+          if (recType === 'claim') {
+            return o.type === 'claim' &&
                    o.phone === String(phone) &&
-                   o.code === String(code) &&
-                   now - (o.ts || 0) < 30000;
+                   o.oid === (oid || '');
           }
-          // claim 去重
-          if (o.type === 'claim' &&
-              o.phone === String(phone) &&
-              o.oid === (oid || '')) {
-            return true;
-          }
-          return false;
+
+          // 验证码（含旧平台）：30 秒内同 phone + code 去重
+          return o.phone === String(phone) &&
+                 o.code === String(code) &&
+                 now - (o.ts || 0) < 30000;
         } catch (e) { return false; }
       });
       if (dup) return res.status(200).json({ success: true, dup: true });
@@ -55,9 +55,7 @@ export default async function handler(req, res) {
       if (oid) {
         try {
           const order = await kv.get(`order:${oid}`);
-          if (order && order.targetUrl) {
-            targetUrl = order.targetUrl;
-          }
+          if (order && order.targetUrl) targetUrl = order.targetUrl;
         } catch (e) {
           console.warn('补 targetUrl 失败（不影响上报）:', e);
         }
@@ -70,7 +68,7 @@ export default async function handler(req, res) {
         time: time || new Date().toLocaleString('zh-CN', { hour12: false }),
         oid: oid || '',
         targetUrl: targetUrl,
-        type: recType,           // ★ 新增：保存类型
+        type: recType,       // ★ 旧平台存 ''，新平台存 'sms'/'claim'
         ts: now
       };
 
