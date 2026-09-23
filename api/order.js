@@ -16,8 +16,6 @@ function buildShortUrl(oid) {
   return SHORTLINK_BASE + oid;
 }
 
-// 不再需要 DAY_MS，已删除
-
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -41,15 +39,36 @@ export default async function handler(req, res) {
       // === 【老平台专用】取到验证码后 5 分钟失效 ===
       if (action === 'complete') {
         if (!oid) return res.status(400).json({ error: '缺少 oid' });
+
         const existing = await kv.get(`order:${oid}`);
-        if (existing) {
-          await kv.set(
-            `order:${oid}`,
-            { ...existing, fetchedAt: Date.now() },
-            { ex: 300 } // 5 分钟
-          );
+        if (!existing) {
+          return res.status(404).json({ error: '订单不存在或已失效' });
         }
-        return res.status(200).json({ success: true, message: '已设定5分钟后失效' });
+
+        const now = Date.now();
+
+        // ★ 核心修改：如果已经有过 expireAt 且尚未到期，则不重置，直接返回原过期时间
+        if (existing.expireAt && existing.expireAt > now) {
+          return res.status(200).json({
+            success: true,
+            expireAt: existing.expireAt,
+            message: '订单已在倒计时中，未重置'
+          });
+        }
+
+        // 首次设置：5 分钟后失效
+        const expireAt = now + 300 * 1000; // 5 分钟
+        await kv.set(
+          `order:${oid}`,
+          { ...existing, fetchedAt: now, expireAt },
+          { ex: 300 } // KV 层面也设置为 5 分钟后自动删除
+        );
+
+        return res.status(200).json({
+          success: true,
+          expireAt,
+          message: '已设定5分钟后失效'
+        });
       }
 
       // === 【新平台】买家点击“我已阅读取号” ===
